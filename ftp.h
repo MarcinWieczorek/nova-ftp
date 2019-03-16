@@ -78,7 +78,7 @@ void ftp_client_close(struct ftp_client *);
 
 void ftp_loop(struct ftp_server *);
 
-const struct ftp_cmd cmd_map[] = {
+const static struct ftp_cmd cmd_map[] = {
     { .cmd="USER", .fptr=&handle_cmd_USER },
     { .cmd="PASS", .fptr=&handle_cmd_PASS },
     { .cmd="SYST", .fptr=&handle_cmd_SYST },

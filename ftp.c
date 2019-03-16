@@ -16,7 +16,7 @@ struct ftp_server *ftp_init() {
     struct ftp_server *ftp = malloc(sizeof(struct ftp_server));
     ftp->clients_max = 8;
     ftp->clients = malloc(ftp->clients_max * sizeof(struct ftp_client));
-    ftp->cmd_port = 2021;
+    ftp->isopen = true;
     for(int i = 0; i < ftp->clients_max; i++) {
         ftp->clients[i] = NULL;
     }
@@ -33,6 +33,10 @@ void ftp_free(struct ftp_server *ftp) {
 
     free(ftp->clients);
     free(ftp);
+}
+
+void ftp_close(struct ftp_server *ftp) {
+    ftp->isopen = false;
 }
 
 void ftp_send(struct ftp_client *c, char *msg) {
@@ -55,32 +59,40 @@ void ftp_data_send(struct ftp_client *c, char *buf, int size) {
     printf("sent %d bytes.\n", size);
 }
 
-void ftp_data_open(struct ftp_client *c) {
+bool ftp_data_open(struct ftp_client *c) {
     struct sockaddr_in servaddr;
-
     c->conn_data = socket(AF_INET, SOCK_STREAM, 0);
+
     if(c->conn_data == -1) {
-        printf("socket creation failed...\n");
-        exit(0);
+        printf("=== Unable to create DATA socket on %d.%d.%d.%d:%hu\n",
+               c->data_addr[0], c->data_addr[1], c->data_addr[2],
+               c->data_addr[3], c->data_port);
+        ftp_client_close(c);
+        return false;
     }
+
     bzero(&servaddr, sizeof(servaddr));
 
     servaddr.sin_family = AF_INET;
     servaddr.sin_addr.s_addr = inet_addr("127.0.0.1");
     servaddr.sin_port = htons(c->data_port);
 
-    if(connect(c->conn_data, (struct sockaddr*)&servaddr,
+    char str[INET_ADDRSTRLEN];
+    inet_ntop(AF_INET, &(c->addr.sin_addr), str, INET_ADDRSTRLEN);
+
+    if(connect(c->conn_data, (struct sockaddr *) &servaddr,
                sizeof(servaddr)) != 0) {
-        printf("connection with the server failed...\n");
-        exit(0);
-    }
-    else {
-        char str[INET_ADDRSTRLEN];
-        inet_ntop(AF_INET, &(c->addr.sin_addr), str, INET_ADDRSTRLEN);
-        printf("=== Opened new DATA connection with %d.%d.%d.%d:%hu\n",
+        printf("=== Unable to connect to DATA port on %d.%d.%d.%d:%hu\n",
                c->data_addr[0], c->data_addr[1], c->data_addr[2],
                c->data_addr[3], c->data_port);
+        ftp_client_close(c);
+        return false;
     }
+
+    printf("=== Opened new DATA connection with %d.%d.%d.%d:%hu\n",
+           c->data_addr[0], c->data_addr[1], c->data_addr[2],
+           c->data_addr[3], c->data_port);
+    return true;
 }
 
 void ftp_data_close(struct ftp_client *c) {
@@ -103,16 +115,18 @@ void ftp_cmd_open(struct ftp_server *ftp) {
     servaddr.sin_addr.s_addr = htonl(INADDR_ANY);
     servaddr.sin_port = htons(ftp->cmd_port);
 
-    if((bind(ftp->socket_cmd, (struct sockaddr*)&servaddr,
+    if((bind(ftp->socket_cmd, (struct sockaddr *) &servaddr,
              sizeof(servaddr))) != 0) {
-        printf("socket bind failed...\n");
+        printf("=== Unable to bind port %hu.\n", ftp->cmd_port);
         exit(0);
     }
 
-    if((listen(ftp->socket_cmd, 5)) != 0) {
-        printf("Listen failed...\n");
+    if(listen(ftp->socket_cmd, 5) != 0) {
+        printf("=== Listen failed.\n");
         exit(0);
     }
+
+    printf("=== Opened CMD socket on port %hu.\n", ftp->cmd_port);
 }
 
 struct ftp_client *ftp_accept(struct ftp_server *ftp) {
@@ -120,12 +134,8 @@ struct ftp_client *ftp_accept(struct ftp_server *ftp) {
     int conn_cmd;
     struct sockaddr_in addr;
     /* conn_cmd = accept(ftp->socket_cmd, (struct sockaddr *) &addr, &len); */
-    conn_cmd = accept4(
-            ftp->socket_cmd,
-            (struct sockaddr *) &addr,
-            &len,
-            SOCK_NONBLOCK
-    );
+    conn_cmd = accept4(ftp->socket_cmd, (struct sockaddr *) &addr, &len,
+                       SOCK_NONBLOCK);
 
     if(errno == EAGAIN) {
         errno = 0;
@@ -158,6 +168,7 @@ struct ftp_client *ftp_accept(struct ftp_server *ftp) {
     if(clients_element == NULL) {
         printf("=== Can't accept %s:%hu, too many connections\n", addr_str,
                client->addr.sin_port);
+        close(conn_cmd);
         return NULL;
     }
 
@@ -206,15 +217,16 @@ void handle_cmd_QUIT(struct ftp_client *c, char *arg) {
 }
 
 void handle_cmd_PORT(struct ftp_client *c, char *arg) {
-    char *token = strtok(arg, ",");
-    c->data_addr[0] = atoi(token);
+    c->data_addr[0] = atoi(strtok(arg, ","));
     c->data_addr[1] = atoi(strtok(NULL, ","));
     c->data_addr[2] = atoi(strtok(NULL, ","));
     c->data_addr[3] = atoi(strtok(NULL, ","));
     c->data_port = atoi(strtok(NULL, ",")) << 8;
     c->data_port |= atoi(strtok(NULL, ","));
-    ftp_data_open(c);
-    ftp_send(c, "200 Command okay.");
+
+    if(ftp_data_open(c)) {
+        ftp_send(c, "200 Command okay.");
+    }
 }
 
 void handle_cmd_LIST(struct ftp_client *c, char *arg) {
@@ -354,7 +366,7 @@ void ftp_client_print(struct ftp_client *c, bool server, bool data) {
 }
 
 void ftp_loop(struct ftp_server *ftp) {
-    while(1) {
+    while(ftp->isopen) {
         ftp_accept(ftp);
 
         for(int i = 0; i < ftp->clients_max; i++) {

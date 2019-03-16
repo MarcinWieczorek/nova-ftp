@@ -11,6 +11,7 @@ struct ftp_server {
     int clients_max;
     int socket_cmd;
     bool passive;
+    bool isopen;
 };
 
 struct ftp_client {
@@ -33,11 +34,13 @@ struct ftp_server *ftp_init();
 
 void ftp_free(struct ftp_server *);
 
+void ftp_close(struct ftp_server *);
+
 void ftp_send(struct ftp_client *, char *msg);
 
 void ftp_data_send(struct ftp_client *, char *buf, int size);
 
-void ftp_data_open(struct ftp_client *);
+bool ftp_data_open(struct ftp_client *);
 
 void ftp_data_close(struct ftp_client *);
 

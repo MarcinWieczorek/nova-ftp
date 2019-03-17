@@ -17,6 +17,12 @@ struct ftp_server *ftp_init() {
     ftp->clients_max = 8;
     ftp->clients = malloc(ftp->clients_max * sizeof(struct ftp_client));
     ftp->isopen = true;
+    ftp->passive = false;
+    ftp->data_addr[0] = 127;
+    ftp->data_addr[1] = 0;
+    ftp->data_addr[2] = 0;
+    ftp->data_addr[3] = 1;
+
     for(int i = 0; i < ftp->clients_max; i++) {
         ftp->clients[i] = NULL;
     }
@@ -43,6 +49,12 @@ void ftp_send(struct ftp_client *c, char *msg) {
     char buf[128];
     strcpy(buf, msg);
     strcat(buf, "\r\n");
+
+    if(c->conn_cmd < 3) {
+        printf("ERROR: Bad file descriptor!\n");
+        exit(1);
+    }
+
     write(c->conn_cmd, buf, strlen(buf));
     ftp_client_print(c, true, false);
     printf("%s\n", msg);
@@ -54,9 +66,14 @@ void ftp_data_send(struct ftp_client *c, char *buf, int size) {
         return;
     }
 
+    if(c->conn_data < 3) {
+        printf("ERROR: Bad file descriptor!\n");
+        exit(1);
+    }
+
     write(c->conn_data, buf, size);
     ftp_client_print(c, true, true);
-    printf("sent %d bytes.\n", size);
+    printf("Sent %d bytes.\n", size);
 }
 
 char *ftp_data_read(struct ftp_client *c, size_t *size) {
@@ -94,7 +111,49 @@ char *ftp_data_read(struct ftp_client *c, size_t *size) {
     return buf;
 }
 
+bool ftp_passive_open(struct ftp_server *ftp) {
+    if(ftp->passive) {
+        return false;
+    }
+
+    struct sockaddr_in servaddr;
+    ftp->socket_passive = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
+
+    if(ftp->socket_passive == -1) {
+        printf("=== Unable to create passive socket\n");
+        return false;
+    }
+
+    int one = 1;
+    setsockopt(ftp->socket_passive, SOL_SOCKET, SO_REUSEADDR, &one,
+            sizeof(one));
+
+    bzero(&servaddr, sizeof(servaddr));
+    servaddr.sin_family = AF_INET;
+    servaddr.sin_addr.s_addr = htonl(INADDR_ANY);
+    servaddr.sin_port = htons(ftp->data_port);
+
+    if(bind(ftp->socket_passive, (struct sockaddr *) &servaddr,
+             sizeof(servaddr)) != 0) {
+        printf("=== Unable to bind passive port %hu.\n", ftp->data_port);
+        return false;
+    }
+
+    if(listen(ftp->socket_passive, 5) != 0) {
+        printf("=== Passive listen failed.\n");
+        return false;
+    }
+
+    printf("=== Opened new passive socket on port %hu\n", ftp->data_port);
+    ftp->passive = true;
+    return true;
+}
+
 bool ftp_data_open(struct ftp_client *c) {
+    if(c->server->passive && c->passive) {
+        return true;
+    }
+
     struct sockaddr_in servaddr;
     c->conn_data = socket(AF_INET, SOCK_STREAM, 0);
 
@@ -126,6 +185,9 @@ bool ftp_data_open(struct ftp_client *c) {
         ftp_client_close(c);
         return false;
     }
+
+    int flags = fcntl(c->conn_data, F_GETFL, 0);
+    fcntl(c->conn_data, F_SETFL, flags | O_NONBLOCK);
 
     printf("=== Opened new DATA connection with %d.%d.%d.%d:%hu\n",
            c->data_addr[0], c->data_addr[1], c->data_addr[2],
@@ -165,6 +227,32 @@ void ftp_cmd_open(struct ftp_server *ftp) {
     }
 
     printf("=== Opened CMD socket on port %hu.\n", ftp->cmd_port);
+}
+
+void ftp_accept_passive(struct ftp_client *client) {
+    unsigned int len = sizeof(struct sockaddr_in);
+    int conn;
+    struct sockaddr_in addr;
+    /* conn_cmd = accept(ftp->socket_cmd, (struct sockaddr *) &addr, &len); */
+    conn = accept4(client->server->socket_passive, (struct sockaddr *) &addr,
+            &len, SOCK_NONBLOCK);
+
+    if(errno == EAGAIN) {
+        errno = 0;
+        return;
+    }
+
+    if(conn < 0) {
+        printf("Server acccept failed...\n");
+        return;
+    }
+
+    char addr_str[INET_ADDRSTRLEN];
+    inet_ntop(AF_INET, &(client->addr.sin_addr), addr_str, INET_ADDRSTRLEN);
+
+    printf("=== New client connected to passive DATA from %s:%hu\n", addr_str,
+           client->addr.sin_port);
+    client->conn_data = conn;
 }
 
 struct ftp_client *ftp_accept(struct ftp_server *ftp) {
@@ -280,7 +368,18 @@ void handle_cmd_PWD(struct ftp_client *c, char *arg) {
 }
 
 void handle_cmd_PASV(struct ftp_client *c, char *arg) {
-    ftp_send(c, "227 Entering Passive mode.");
+    ftp_passive_open(c->server);
+    char addr_str[27 + INET_ADDRSTRLEN + 9];
+    c->passive = true;
+    sprintf(addr_str, "227 Entering Passive mode. %u,%u,%u,%u,%hu,%hu",
+            c->server->data_addr[0],
+            c->server->data_addr[1],
+            c->server->data_addr[2],
+            c->server->data_addr[3],
+            c->server->data_port >> 8,
+            c->server->data_port & 0xFF);
+
+    ftp_send(c, addr_str);
 }
 
 void handle_cmd_RETR(struct ftp_client *c, char *arg) {
@@ -411,6 +510,9 @@ void ftp_loop(struct ftp_server *ftp) {
                 continue;
             }
 
+            if(ftp->passive) {
+                ftp_accept_passive(ftp->clients[i]);
+            }
             ftp_client_handle(ftp->clients[i]);
         }
     }

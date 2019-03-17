@@ -7,10 +7,13 @@
 
 struct ftp_server {
     short cmd_port;
+    short data_port;
+    uint8_t data_addr[4];
     struct ftp_client **clients;
     int clients_max;
     int socket_cmd;
     bool passive;
+    int socket_passive;
     bool isopen;
 };
 
@@ -21,6 +24,7 @@ struct ftp_client {
     uint16_t data_port;
     int conn_data;
     int conn_cmd;
+    bool passive;
 };
 
 struct ftp_cmd {
@@ -77,6 +81,8 @@ void ftp_client_print(struct ftp_client *, bool server, bool data);
 void ftp_client_close(struct ftp_client *);
 
 void ftp_loop(struct ftp_server *);
+
+void ftp_accept_passive(struct ftp_client *client);
 
 const static struct ftp_cmd cmd_map[] = {
     { .cmd="USER", .fptr=&handle_cmd_USER },

@@ -63,6 +63,7 @@ int main(int argc, char **argv) {
 
     // Pass arguments to the server
     ftp->cmd_port = arg_cmdport->ival[0];
+    ftp->data_port = arg_dataport->ival[0];
     ftp->clients_max = arg_clientsmax->ival[0];
 
     ftp_cmd_open(ftp);

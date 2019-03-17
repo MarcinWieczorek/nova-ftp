@@ -59,6 +59,41 @@ void ftp_data_send(struct ftp_client *c, char *buf, int size) {
     printf("sent %d bytes.\n", size);
 }
 
+char *ftp_data_read(struct ftp_client *c, size_t *size) {
+    int total_size = 0;
+    int data_size = 0;
+    int buf_size = 128;
+    char *buf = malloc(buf_size);
+    int to_read = buf_size;
+
+    do {
+        if(data_size == to_read) {
+            to_read = buf_size;
+            buf_size *= 2;
+            buf = realloc(buf, buf_size);
+        }
+
+        data_size = read(c->conn_data, buf + total_size, to_read);
+
+        if(data_size == -1) {
+            if(total_size == 0) {
+                continue;
+            }
+
+            total_size += data_size;
+            break;
+        }
+
+        total_size += data_size;
+    }
+    while(data_size != 0);
+
+    ftp_client_print(c, false, true);
+    printf("Received %d bytes.\n", total_size);
+    *size = total_size;
+    return buf;
+}
+
 bool ftp_data_open(struct ftp_client *c) {
     struct sockaddr_in servaddr;
     c->conn_data = socket(AF_INET, SOCK_STREAM, 0);
@@ -73,8 +108,11 @@ bool ftp_data_open(struct ftp_client *c) {
 
     bzero(&servaddr, sizeof(servaddr));
 
+    char addr_str[INET_ADDRSTRLEN];
+    sprintf(addr_str, "%u.%u.%u.%u", c->data_addr[0], c->data_addr[1],
+            c->data_addr[2], c->data_addr[3]);
     servaddr.sin_family = AF_INET;
-    servaddr.sin_addr.s_addr = inet_addr("127.0.0.1");
+    servaddr.sin_addr.s_addr = inet_addr(addr_str);
     servaddr.sin_port = htons(c->data_port);
 
     char str[INET_ADDRSTRLEN];
@@ -200,7 +238,7 @@ void exec_to_buffer(char *cmd, char **argv, char *buf, int buf_size) {
 }
 
 void handle_cmd_USER(struct ftp_client *c, char *arg) {
-    printf("Attemping to log in with user: %s\n", arg);
+    printf("=== Attemping to log in with user: %s\n", arg);
     ftp_send(c, "331 User name okay, need password.");
 }
 
@@ -223,10 +261,7 @@ void handle_cmd_PORT(struct ftp_client *c, char *arg) {
     c->data_addr[3] = atoi(strtok(NULL, ","));
     c->data_port = atoi(strtok(NULL, ",")) << 8;
     c->data_port |= atoi(strtok(NULL, ","));
-
-    if(ftp_data_open(c)) {
-        ftp_send(c, "200 Command okay.");
-    }
+    ftp_send(c, "200 Command okay.");
 }
 
 void handle_cmd_LIST(struct ftp_client *c, char *arg) {
@@ -234,6 +269,7 @@ void handle_cmd_LIST(struct ftp_client *c, char *arg) {
     char *argv[] = { "ls", "-al", NULL };
     exec_to_buffer("/usr/bin/ls", argv, buf, 1024);
     ftp_send(c, "125 Sending directory list.");
+    ftp_data_open(c);
     ftp_data_send(c, buf, strlen(buf));
     ftp_data_close(c);
     ftp_send(c, "226 Finished sending directory list.");
@@ -258,6 +294,7 @@ void handle_cmd_RETR(struct ftp_client *c, char *arg) {
     char *buf = malloc(size);
     read(fd, buf, size);
     ftp_send(c, "125 Sending file.");
+    ftp_data_open(c);
     ftp_data_send(c, buf, size);
     ftp_data_close(c);
     ftp_send(c, "226 Transfer complete.");

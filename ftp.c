@@ -9,6 +9,7 @@
 #include <arpa/inet.h>
 #include <sys/stat.h>
 #include <fcntl.h>
+#include <limits.h>
 
 #include "ftp.h"
 
@@ -22,6 +23,9 @@ struct ftp_server *ftp_init() {
     ftp->data_addr[1] = 0;
     ftp->data_addr[2] = 0;
     ftp->data_addr[3] = 1;
+
+    ftp->pwd = malloc(PATH_MAX);
+    getcwd(ftp->pwd, PATH_MAX);
 
     for(int i = 0; i < ftp->clients_max; i++) {
         ftp->clients[i] = NULL;
@@ -277,6 +281,8 @@ struct ftp_client *ftp_accept(struct ftp_server *ftp) {
     client->conn_cmd = conn_cmd;
     client->addr = addr;
     client->server = ftp;
+    client->cwd = malloc(PATH_MAX);
+    strcpy(client->cwd, "/");
 
     // Add to clients array
     struct ftp_client **clients_element = NULL;
@@ -354,7 +360,10 @@ void handle_cmd_PORT(struct ftp_client *c, char *arg) {
 
 void handle_cmd_LIST(struct ftp_client *c, char *arg) {
     char buf[1024] = { 0 };
-    char *argv[] = { "ls", "-al", NULL };
+    char path[PATH_MAX];
+    strcpy(path, c->server->pwd);
+    strcat(path, c->cwd);
+    char *argv[] = { "ls", "-al", path, NULL };
     exec_to_buffer("/usr/bin/ls", argv, buf, 1024);
     ftp_send(c, "125 Sending directory list.");
     ftp_data_open(c);
@@ -364,7 +373,10 @@ void handle_cmd_LIST(struct ftp_client *c, char *arg) {
 }
 
 void handle_cmd_PWD(struct ftp_client *c, char *arg) {
-    ftp_send(c, "257 \"/\""); //TODO send actual PWD
+    char msg[PATH_MAX] = "257 \"";
+    strcat(msg, c->cwd);
+    strcat(msg, "\"");
+    ftp_send(c, msg);
 }
 
 void handle_cmd_PASV(struct ftp_client *c, char *arg) {
@@ -383,7 +395,11 @@ void handle_cmd_PASV(struct ftp_client *c, char *arg) {
 }
 
 void handle_cmd_RETR(struct ftp_client *c, char *arg) {
-    int fd = open(arg, O_RDONLY);
+    char path[PATH_MAX];
+    strcpy(path, c->server->pwd);
+    strcat(path, arg);
+
+    int fd = open(path, O_RDONLY);
     if(fd == -1) {
         return;
     }
@@ -398,6 +414,11 @@ void handle_cmd_RETR(struct ftp_client *c, char *arg) {
     ftp_data_close(c);
     ftp_send(c, "226 Transfer complete.");
     free(buf);
+}
+
+void handle_cmd_CWD(struct ftp_client *c, char *arg) {
+    strcpy(c->cwd, arg);
+    ftp_send(c, "250 Directory changed.");
 }
 
 int handle_command(struct ftp_client *c, char *buf) {

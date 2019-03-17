@@ -6,6 +6,7 @@
 #include <sys/socket.h>
 
 struct ftp_server {
+    char *pwd;
     short cmd_port;
     short data_port;
     uint8_t data_addr[4];
@@ -25,6 +26,7 @@ struct ftp_client {
     int conn_data;
     int conn_cmd;
     bool passive;
+    char *cwd;
 };
 
 struct ftp_cmd {
@@ -72,6 +74,8 @@ void handle_cmd_PASV(struct ftp_client *, char *arg);
 
 void handle_cmd_RETR(struct ftp_client *, char *arg);
 
+void handle_cmd_CWD(struct ftp_client *c, char *arg);
+
 int handle_command(struct ftp_client *, char *buf);
 
 void ftp_client_handle(struct ftp_client *);
@@ -94,6 +98,7 @@ const static struct ftp_cmd cmd_map[] = {
     { .cmd="PWD",  .fptr=&handle_cmd_PWD  },
     { .cmd="PASV", .fptr=&handle_cmd_PASV },
     { .cmd="RETR", .fptr=&handle_cmd_RETR },
+    { .cmd="CWD",  .fptr=&handle_cmd_CWD  },
 };
 
 #endif
